@@ -1,0 +1,2352 @@
+#
+# xpath.ry
+#
+#   Copyright (C) Ueno Katsuhiro 2000
+#
+# $Id: xpath.ry,v 1.2 2003/03/12 06:38:21 yoshidam Exp $
+#
+
+class Compiler
+
+prechigh
+  left '|'
+  right NEG
+  left MUL 'div' 'mod'
+  left '+' '-'
+  left '<' '>' '<=' '>='
+  left '=' '!='
+  left 'and'
+  left 'or'
+preclow
+
+options no_result_var
+
+
+rule
+
+  xPath:          # none #
+                      { [] }
+                  | expr
+                      {
+                        expr = val[0].expr('.to_ruby')
+                        expr.collect! { |i| i or @context }
+                        expr
+                      }
+                  | PATTERN pattern     # for XSLT
+                      {
+                        expr = val[0].expr('.to_ruby')
+                        expr.collect! { |i| i or @context }
+                        expr
+                      }
+
+  pattern:        locationPath
+                  | pattern '|' locationPath
+                      { val[0] ** val[2] }
+
+  expr:           expr 'or' expr
+                      { val[0].logical_or val[2] }
+                  | expr 'and' expr
+                      { val[0].logical_and val[2] }
+                  | expr '=' expr
+                      { val[0].eq val[2] }
+                  | expr '!=' expr
+                      { val[0].neq val[2] }
+                  | expr '<' expr
+                      { val[0].lt val[2] }
+                  | expr '>' expr
+                      { val[0].gt val[2] }
+                  | expr '<=' expr
+                      { val[0].le val[2] }
+                  | expr '>=' expr
+                      { val[0].ge val[2] }
+                  | expr '+' expr
+                      { val[0] + val[2] }
+                  | expr '-' expr
+                      { val[0] - val[2] }
+                  | '-' expr =NEG
+                      { -val[1] }
+                  | expr MUL expr
+                      { val[0] * val[2] }
+                  | expr 'div' expr
+                      { val[0] / val[2] }
+                  | expr 'mod' expr
+                      { val[0] % val[2] }
+                  | expr '|' expr
+                      {
+                        # Why `**' is used for unionizing node-sets is that its
+                        # precedence is higher than any other binary operators
+                        # in Ruby.
+                        val[0] ** val[2]
+                      }
+                  | locationPath
+                  | filterExpr
+                  | filterExpr '/' relPath
+                      { val[0] << val[2] }
+                  | filterExpr '//' relPath
+                      { val[0].add_step('descendant-or-self') << val[2] }
+
+  filterExpr:     Variable
+                      {
+                        Expression.new [ nil,'.get_variable(',val[0].dump,')' ]
+                      }
+                  | '(' expr ')'
+                      { val[1].unarize }
+                  | Literal
+                      { Expression.new StringConstant.new(val[0]) }
+                  | Number
+                      { Expression.new NumberConstant.new(val[0]) }
+                  | functionCall
+                      { Expression.new val[0] }
+                  | filterExpr predicate
+                      { val[0].add_predicate val[1] }
+
+  functionCall:   FuncName '(' arguments ')'
+                      {
+                        val[2][0,0] = [ nil, ".funcall(#{val[0].dump}" ]
+                        val[2].push(')')
+                      }
+
+  arguments:      # none #
+                      { [] }
+                  | expr
+                      { val[0].expr.unshift ', ' }
+                  | arguments ',' expr
+                      { val[0].push(', ').concat(val[2].expr) }
+
+  predicate:      '['
+                      {
+                        c = @context
+                        @context = c.succ
+                        c
+                      }
+                  expr
+                      {
+                        c = @context
+                        @context = _values[-2]
+                        c
+                      }
+                  ']'
+                      {
+                        expr = val[2]
+                        valuetype = expr.value_type
+                        value = expr.value
+                        if valuetype == :number then
+                          if value then
+                            f = value.to_f
+                            if f > 0 and f.truncate == f then
+                              [ ".at(#{f.to_i})" ]
+                            else
+                              [ '.at(0)' ]   # clear
+                            end
+                          else
+                            expr.expr('.to_f').
+                              unshift('.at(').push(')')
+                          end
+                        elsif value then
+                          if value.true? then
+                            []
+                          else
+                            [ '.at(0)' ]   # clear
+                          end
+                        else
+                          c = val[3]
+                          if valuetype == :ruby_boolean then
+                            conv = '.true?'
+                          else
+                            conv = '.to_predicate'
+                          end
+                          a = expr.expr(conv)
+                          a.collect! { |i| i or c }
+                          a.unshift(".predicate { |#{c}| ").push(' }')
+                        end
+                      }
+
+  locationPath:   '/'
+                      { LocationPath.new.absolute! }
+                  | '/' relPath
+                      { val[1].absolute! }
+                  | '//' relPath
+                      {
+                        path = LocationPath.new
+                        path.absolute!
+                        path.add_step('descendant-or-self') << val[1]
+                      }
+                  | relPath
+
+  relPath:        step
+                      { LocationPath.new.add_step(*val[0]) }
+                  | relPath '/' step
+                      { val[0].add_step(*val[2]) }
+                  | relPath '//' step
+                      {
+                        val[0].add_step('descendant-or-self').add_step(*val[2])
+                      }
+                  # XPath does not permit functions here, but XPointer does.
+                  | relPath '/' FuncName '('
+                      {
+                        c = @context
+                        @context = c.succ
+                        c
+                      }
+                    arguments
+                      {
+                        c = @context
+                        @context = _values[-2]
+                        c
+                      }
+                  ')'
+                      {
+                        on_error unless is_xpointer?
+                        args = val[5]
+                        c = val[6]
+                        args.collect! { |i| i or c }
+                        args[0] = ".funcall(#{val[2].dump}) { |#{c}| ["
+                        args.push '] }'
+                        val[0].add_predicate args
+                      }
+
+  step:           '.'
+                      { [ 'self', false, false, false, nil ] }
+                  | '..'
+                      { [ 'parent', false, false, false, nil ] }
+                  | axisSpec nodeTest predicates
+                      {
+                        nodetest = val[1]
+                        unless nodetest[0] then
+                          axis = val[0]
+                          if axis != 'attribute' and axis != 'namespace' then
+                            nodetest[0] = 'element'
+                          end
+                        end
+                        nodetest[0] = false if nodetest[0] == 'node'
+                        nodetest.unshift(val[0]).push(val[2])
+                      }
+
+  predicates:     # none #
+                  | predicates predicate
+                      { (val[0] || []).concat val[1] }
+
+  nodeTest:       '*'
+                      { [ false, false, false ] }
+                  | Name
+                      {
+                        if /:/ =~ val[0] then
+                          [ false, $', $` ]   #' <= for racc
+                        else
+                          [ false, val[0], nil ]
+                        end
+                      }
+                  | Name ':' '*'
+                      {
+                        on_error if /:/ =~ val[0]
+                        [ false, false, val[0] ]
+                      }
+                  | NodeType '(' nodeTestArg ')'
+                      {
+                        nodetype = val[0]
+                        arg = val[2]
+                        if arg and nodetype != 'processing-instruction' then
+                          raise CompileError,
+                            "nodetest #{nodetype}() requires no argument"
+                        end
+                        [ nodetype, arg || false, false ]
+                      }
+
+  nodeTestArg:    # none #
+                  | Literal
+
+  axisSpec:       # none #
+                      { 'child' }
+                  | '@'
+                      { 'attribute' }
+                  | AxisName '::'
+
+end
+
+
+---- inner ----
+
+  module CompilePhaseObject
+
+    def invoke_conv(expr, conv_method)
+      return unless conv_method
+      if conv_method == '.to_number' or
+          conv_method == '.to_string' or
+          conv_method == '.to_boolean' then
+        expr.push conv_method, '(', nil, ')'
+      else
+        expr.push conv_method
+      end
+    end
+    private :invoke_conv
+
+  end
+
+
+  module ConstantObject
+
+    include CompilePhaseObject
+
+    def to_string
+      StringConstant.new to_str
+    end
+
+    def to_number
+      NumberConstant.new self
+    end
+
+    def to_boolean
+      if true? then
+        ConstantTrue
+      else
+        ConstantFalse
+      end
+    end
+
+  end
+
+
+  module BooleanConstant
+
+    include ConstantObject
+
+    def value_type
+      :boolean
+    end
+
+    def expr(conv_method = nil)
+      if conv_method == '.to_ruby' or conv_method == '.true?' then
+        [ true?.to_s ]
+      else
+        ret = [ nil, '.make_boolean(', true?.to_s, ')' ]
+        invoke_conv ret, conv_method unless conv_method == '.to_boolean'
+        ret
+      end
+    end
+
+  end
+
+  class ConstantTrueClass < XPathTrueClass
+    include BooleanConstant
+    @instance = new
+  end
+
+  class ConstantFalseClass < XPathFalseClass
+    include BooleanConstant
+    @instance = new
+  end
+
+  ConstantTrue = ConstantTrueClass.instance
+  ConstantFalse = ConstantFalseClass.instance
+
+
+
+  class NumberConstant < XPathNumber
+
+    include ConstantObject
+
+    def value_type
+      :number
+    end
+
+    def initialize(src)
+      f = src.to_f
+      if src.is_a? ConstantObject and s = dump_float(f) then
+        src = s
+      end
+      @src = [ src ]
+      @precedence = 1
+      super f
+    end
+
+    attr_reader :precedence
+    protected :precedence
+
+    def to_number
+      self
+    end
+
+
+    def expr(conv_method = nil)
+      @src.collect! { |i|
+        if i.is_a? ConstantObject then
+          i.expr '.to_f'
+        else
+          i
+        end
+      }
+      expr = @src
+      expr.flatten!
+      @src = :draff  # for debug
+      unless conv_method == '.to_ruby' or conv_method == '.to_f' then
+        expr[0, 0] = [ nil, '.make_number(' ]
+        expr.push(')')
+        invoke_conv expr, conv_method unless conv_method == '.to_number'
+      end
+      expr
+    end
+
+
+    private
+
+    def dump_float(f)
+      if f.finite? and f == eval(s = f.to_s) then
+        s
+      elsif f.infinite? then
+        if f > 0 then
+          '(1.0 / 0.0)'
+        else
+          '(-1.0 / 0.0)'
+        end
+      elsif f.nan? then
+        '(0.0 / 0.0)'
+      else
+        nil
+      end
+    end
+
+
+    def concat(op, other, prec)
+      @src.unshift('(').push(')') if @precedence < prec
+      if other.precedence < prec then
+        @src.push(op).push('(').concat(other.expr('.to_f')).push(')')
+      else
+        @src.push(op).concat(other.expr('.to_f'))
+      end
+      @precedence = prec
+    end
+
+
+    public
+
+    def self.def_arithmetic_operator(op, precedence)
+      module_eval <<_, __FILE__, __LINE__ + 1
+      def #{op}(other)
+        super other
+        if s = dump_float(@value) then
+          @src.clear
+          @src.push s
+        else
+          concat ' #{op} ', other, #{precedence}
+        end
+        self
+      end
+_
+    end
+
+    def_arithmetic_operator '+', 0
+    def_arithmetic_operator '-', 0
+    def_arithmetic_operator '*', 1
+    def_arithmetic_operator '/', 1
+
+    class << self
+      undef def_arithmetic_operator
+    end
+
+    def %(other)
+      orig = @value
+      super other
+      if s = dump_float(@value) then
+        @src.clear
+        @src.push s
+      else
+        f = other.to_f
+        other = -other if orig % f == -@value
+        concat ' % ', other, 1
+      end
+      self
+    end
+
+    def -@
+      super
+      if s = dump_float(@value) then
+        @src.clear
+        @src.push s
+      else
+        if @src.size == 1 then
+          @src.unshift '-'
+        else
+          @src.unshift('-(').push(')')
+        end
+        @precedence = 1
+      end
+      self
+    end
+
+  end
+
+
+
+  class StringConstant < XPathString
+
+    include ConstantObject
+
+    def value_type
+      :string
+    end
+
+    def to_string
+      self
+    end
+
+    def expr(conv_method = nil)
+      if conv_method == '.to_ruby' or conv_method == '.to_str' then
+        [ @value.dump ]
+      else
+        ret = [ nil, '.make_string(', @value.dump, ')' ]
+        invoke_conv ret, conv_method unless conv_method == '.to_string'
+        ret
+      end
+    end
+
+  end
+
+
+
+  class Expression
+
+    include CompilePhaseObject
+
+    def initialize(expr)
+      if expr.is_a? ConstantObject then
+        @value = expr
+      else
+        raise "BUG" unless expr.is_a? Array
+        @value = nil
+        @valuetype = nil
+        @expr = expr
+      end
+      @unary = true
+    end
+
+    attr_reader :value
+
+
+    def value_type
+      if @value then
+        @value.value_type
+      else
+        @valuetype
+      end
+    end
+
+
+    def unarize
+      unless @unary then
+        @expr.unshift('(').push(')')
+        @unary = true
+      end
+      self
+    end
+
+
+    def self.def_comparison_operator(name, op)
+      module_eval <<_, __FILE__, __LINE__ + 1
+      def #{name}(other)
+        if @value and other.value then
+          if @value #{op} other.value then
+            @value = ConstantTrue
+          else
+            @value = ConstantFalse
+          end
+          @unary = true
+        else
+          @expr = expr.push(' #{op} ').concat(other.expr)
+          @valuetype = :ruby_boolean
+          @unary = false
+        end
+        self
+      end
+_
+    end
+
+    def self.def_arithmetic_operator(*ops)
+      ops.each { |op|
+        module_eval <<_, __FILE__, __LINE__ + 1
+        def #{op}(other)
+          if @value and other.value then
+            @value = @value.to_number #{op} other.value.to_number
+          else
+            @expr = expr('.to_number').push(' #{op} ')
+            # not 'to_number', for a little speed up :-)
+            @expr.concat other.expr('.to_f')
+            @valuetype = :number
+            @unary = false
+          end
+          self
+        end
+_
+      }
+    end
+
+    def_comparison_operator 'eq',  '=='
+    def_comparison_operator 'neq', '!='
+    def_comparison_operator 'lt',  '<'
+    def_comparison_operator 'gt',  '>'
+    def_comparison_operator 'le',  '<='
+    def_comparison_operator 'ge',  '>='
+    def_arithmetic_operator '+', '-', '*', '/', '%'
+
+    class << self
+      undef def_comparison_operator
+      undef def_arithmetic_operator
+    end
+
+    def -@
+      if @value then
+        @value = -@value.to_number
+      else
+        unarize
+        @expr = expr('.to_number').unshift('-')
+      end
+      self
+    end
+
+    def logical_or(other)
+      if @value and @value.true? then
+        @value = ConstantTrue
+        @unary = true
+        @expr = @valuetype = nil
+      else
+        @expr = expr('.true?').push(' || ').concat(other.expr('.true?'))
+        @valuetype = :ruby_boolean
+        @unary = false
+      end
+      self
+    end
+
+    def logical_and(other)
+      if @value and not @value.true? then
+        @value = ConstantFalse
+        @unary = true
+        @expr = @valuetype = nil
+      else
+        @expr = expr('.true?').push(' && ').concat(other.expr('.true?'))
+        @valuetype = :ruby_boolean
+        @unary = false
+      end
+      self
+    end
+
+    def **(other)
+      @expr = expr.push(' ** ').concat(other.expr)
+      @valuetype = nil
+      @unary = false
+      self
+    end
+
+
+    def add_predicate(pred)
+      unarize
+      @expr = expr.concat(pred)
+      @valuetype = nil
+      self
+    end
+
+    def <<(other)
+      path = other.expr
+      path.shift  # nil
+      path.shift  # .to_nodeset
+      add_predicate path
+    end
+
+    def add_step(axis)
+      add_predicate [ ".step(:#{axis.tr('-','_')})" ]
+    end
+
+
+    def expr(conv_method = nil)
+      if @value then
+        ret = @value.expr(conv_method)
+        @value = nil
+      elsif @valuetype == :ruby_boolean then
+        ret = @expr
+        unless conv_method == '.to_ruby' or conv_method == '.true?' then
+          ret[0, 0] = [ nil, '.make_boolean(' ]
+          ret.push ')'
+          invoke_conv ret, conv_method unless conv_method == '.to_boolean'
+        end
+      elsif @valuetype == :number and conv_method == '.to_number' then
+        ret = @expr
+      elsif @valuetype == :string and conv_method == '.to_string' then
+        ret = @expr
+      elsif @valuetype == :boolean and conv_method == '.to_boolean' then
+        ret = @expr
+      else
+        if conv_method then
+          unarize
+          invoke_conv @expr, conv_method
+        end
+        ret = @expr
+      end
+      @expr = :draff   # for debug
+      ret
+    end
+
+  end
+
+
+
+  class LocationPath
+
+    include CompilePhaseObject
+
+    def initialize
+      @root = false
+      @steps = []    # [ axis, [ tests ], predicates ]
+    end
+
+    attr_reader :root, :steps
+    protected :root, :steps
+
+    def absolute!
+      @root = true
+      self
+    end
+
+
+    def add_step(axis, nodetype = false, localpart = false,
+                 namespace = false, predicate = nil)
+      if nodetype == false and localpart == false and namespace == false then
+        append_step axis, [], predicate
+      else
+        append_step axis, [ [ nodetype, localpart, namespace ] ], predicate
+      end
+      self
+    end
+
+
+    def <<(other)
+      raise "BUG" if other.root
+      other = other.steps
+      other.each { |step|
+        if step[0] then
+          append_step(*step)
+        else
+          add_predicate(step[2])
+        end
+      }
+      self
+    end
+
+
+    def add_predicate(pred)
+      @steps.push [ nil, nil, pred ]
+      self
+    end
+
+
+    def **(other)
+      unless other.is_a? LocationPath then
+        ret = nil
+      else
+        othersteps = other.steps
+        size = @steps.size
+        unless size == othersteps.size then
+          othersize = othersteps.size
+          if size >= othersize then
+            ret = (@steps[0, othersize] == othersize and self)
+          else
+            ret = (othersteps[0, size] == @steps and other)
+          end
+        else
+          last = @steps.pop
+          otherlast = othersteps.pop
+          if @steps == othersteps and mix_step(last, otherlast) then
+            ret = self
+          else
+            ret = nil
+          end
+          @steps.push last
+          othersteps.push otherlast
+        end
+      end
+      ret or Expression.new(expr) ** other
+    end
+
+
+    private
+
+    UnifiableAxes = {
+      'descendant' => {
+        'descendant-or-self' => 'descendant',
+      },
+      'descendant-or-self' => {
+        'child'              => 'descendant',
+        'descendant'         => 'descendant',
+        'descendant-or-self' => 'descendant-or-self',
+      },
+      'ancestor' => {
+        'ancestor-or-self'   => 'ancestor',
+      },
+      'ancestor-or-self' => {
+        'parent'             => 'ancestor',
+        'ancestor'           => 'ancestor',
+        'ancestor-or-self'   => 'ancestor-or-self',
+      },
+      'following-sibling' => {
+        'following-sibling'  => 'following-sibling',
+      },
+      'preceding-sibling' => {
+        'preceding-sibling'  => 'preceding-sibling',
+      },
+      'following' => {
+        'following'          => 'following',
+        'following-sibling'  => 'following',
+      },
+      'preceding' => {
+        'preceding'          => 'preceding',
+        'preceding-sibling'  => 'preceding',
+      },
+      'child' => {
+        'following-sibling'  => 'child',
+        'preceding-sibling'  => 'child',
+      },
+    }
+    UnifiableAxes.default = {}
+
+
+    def append_step(axis, test, predicate)
+      lastaxis, lasttest, lastpred = laststep = @steps.last
+      if axis == 'self' and test.empty? then
+        @steps.push [ nil, nil, predicate ] if predicate
+      elsif lastaxis and lasttest.empty? and
+          not lastpred and not predicate and
+          w = UnifiableAxes[lastaxis][axis] then
+        laststep[0] = w
+        laststep[1] = test
+      else
+        @steps.push [ axis, test, predicate ]
+      end
+    end
+
+
+    def mix_step(step, other)
+      if step[0] and step[0] == other[0] and step[2] == other[2] then
+        step[1].concat other[1]
+        step
+      else
+        nil
+      end
+    end
+
+
+    public
+
+    def expr(conv_method = nil)
+      if @root then
+        expr = [ nil, '.root_nodeset' ]
+      else
+        expr = [ nil, '.to_nodeset' ]
+      end
+      @steps.each { |axis,test,predicate|
+        if axis.nil? then   # predicate only
+          expr.concat predicate
+        elsif test.empty? and not predicate then
+          expr.push ".select_all(:#{axis.tr('-','_')})"
+        else
+          expr.push ".step(:#{axis.tr('-','_')})"
+          if test.empty? then
+            expr.push ' { |n| n.select_all'
+          else
+            expr.push ' { |n| n.select { |i| '
+            test.each { |nodetype,localpart,namespace|
+              if nodetype then
+                expr.push "i.node_type == :#{nodetype.tr('-','_')}", ' && '
+              end
+              if localpart then
+                expr.push "i.name_localpart == #{localpart.dump}", ' && '
+              end
+              if namespace.nil? then
+                expr.push 'i.namespace_uri.nil?', ' && '
+              elsif namespace then
+                namespace = namespace.dump
+                expr.push('i.namespace_uri == ', nil,
+                          ".get_namespace(#{namespace})", ' && ')
+              end
+              expr[-1] = ' or '
+            }
+            expr[-1] = ' }'
+          end
+          expr.concat predicate if predicate
+          expr.push ' }'
+        end
+      }
+      @steps = :draff   # for debug
+      invoke_conv expr, conv_method
+      expr
+    end
+
+
+    def value_type
+      nil
+    end
+
+    def value
+      nil
+    end
+
+    def unarize
+      self
+    end
+
+    def self.redirect_to_expr(*ops)
+      ops.each { |op|
+        name = op
+        name = op[1..-1] if op[0] == ?.
+        module_eval <<_, __FILE__, __LINE__ + 1
+        def #{name}(arg) ; Expression.new(expr) #{op} arg ; end
+_
+      }
+    end
+
+    redirect_to_expr('.eq', '.neq', '.lt', '.gt', '.le', '.ge',
+                     '+', '-', '*', '/', '%', '.logical_or', '.logical_and')
+
+    class << self
+      undef redirect_to_expr
+    end
+
+    def -@
+      -Expression.new(expr)
+    end
+
+  end
+
+
+
+
+  Delim = '\\s\\(\\)\\[\\]\\.@,\\/\\|\\*\\+"\'=!<>:'
+  Name = "[^-#{Delim}][^#{Delim}]*"
+
+  Operator = {
+    '@' => true, '::' => true, '(' => true, '[' => true,
+    :MUL => true, 'and' => true, 'or' => true, 'mod' => true, 'div' => true,
+    '/'  => true, '//' => true, '|'  => true, '+' => true,
+    '-'  => true, '='  => true, '!=' => true, '<' => true,
+    '<=' => true, '>'  => true, '>=' => true,
+    ':' => false
+    # ':' '*'    => '*' must not be a MultiplyOperator
+    # ':' 'and'  => 'and' must be a OperatorName
+  }
+
+  NodeType = {
+    'comment' => true,
+    'text' => true,
+    'processing-instruction' => true,
+    'node' => true,
+  }
+
+
+  private
+
+  def axis?(s)
+    /\A[-a-zA-Z]+\z/ =~ s
+  end
+
+  def nodetype?(s)
+    NodeType.key? s
+  end
+
+  def tokenize(src)
+    token = []
+    src.scan(/(\.\.?|\/\/?|::?|!=|[<>]=?|[-()\[\].@,|+=*])|
+              ("[^"]*"|'[^']*')|(\d+\.?\d*)|
+              (\$?#{Name}(?::#{Name})?)|
+              \s+|./ox) { |delim,literal,number,name|  #/
+      if delim then
+        if delim == '*' then
+          delim = :MUL if (prev = token[-1]) and not Operator.key? prev[0]
+        elsif delim == '::' then
+          prev = token[-1]
+          if prev and prev[0] == :Name and axis? prev[1] then
+            prev[0] = :AxisName
+          end
+        elsif delim == '(' then
+          if (prev = token[-1]) and prev[0] == :Name then
+            if nodetype? prev[1] then
+              prev[0] = :NodeType
+            else
+              prev[0] = :FuncName
+            end
+          end
+        end
+        token.push [ delim, delim ]
+      elsif name then
+        prev = token[-1]
+        if name[0] == ?$ then
+          name[0,1] = ''
+          token.push [ :Variable, name ]
+        elsif Operator.key? name and
+            (prev = token[-1]) and not Operator[prev[0]] then
+          token.push [ name, name ]
+        else
+          token.push [ :Name, name ]
+        end
+      elsif number then
+        number << '.0' unless number.include? ?.
+        token.push [ :Number, number ]
+      elsif literal then
+        literal.chop!
+        literal[0,1] = ''
+        token.push [ :Literal, literal ]
+      else
+        s = $&.strip
+        token.push [ s, s ] unless s.empty?
+      end
+    }
+    token
+  end
+
+
+  public
+
+  def compile(src, pattern = false)
+    @token = tokenize(src)
+    @token.push [ false, :end ]
+    @token.each { |i| p i } if @yydebug
+    @token.reverse!
+    @token.push [ :PATTERN, nil ] if pattern
+    @context = 'context0'
+    ret = do_parse
+    ret = ret.unshift("proc { |context0| ").push(" }").join
+    print ">>>>\n", ret, "\n<<<<\n" if @yydebug
+    XPathProc.new eval(ret), src
+  end
+
+
+  def initialize(debug = false)
+    super()
+    @yydebug = debug
+  end
+
+
+  private
+
+  def next_token
+    @token.pop
+  end
+
+
+  def is_xpointer?
+    false
+  end
+
+
+  def on_error(*args) # tok, val, values
+    raise CompileError, 'parse error'
+  end
+
+
+---- header ----
+#
+# xpath.rb : generated by racc
+#
+
+module XPath
+
+  class Error < StandardError ; end
+  class CompileError < Error ; end
+  class TypeError < Error ; end
+  class NameError < Error ; end
+  class ArgumentError < Error ; end
+  class InvalidOperation < Error ; end
+
+
+  class XPathProc
+
+    def initialize(proc, source)
+      @proc = proc
+      @source = source
+    end
+
+    attr_reader :source
+
+    def call(context)
+      @proc.call context
+    end
+
+  end
+
+
+  def self.compile(src, pattern = false)
+    @compiler = Compiler.new unless defined? @compiler
+    @compiler.compile src, pattern
+  end
+
+
+
+  module XPathObject
+
+    def _type
+      type.name.sub(/\A.*::(?:XPath)?(?=[^:]+\z)/, '')
+    end
+    private :_type
+
+    def type_error(into)
+      raise XPath::TypeError, "failed to convert #{_type} into #{into}"
+    end
+    private :type_error
+
+
+    def to_str         # => to Ruby String
+      type_error 'String'
+    end
+
+    def to_f           # => to Ruby Float
+      type_error 'Float'
+    end
+
+    def true?          # => to Ruby Boolean
+      type_error 'Boolean'
+    end
+
+    def to_ruby        # => to Ruby Object
+      self
+    end
+
+    def to_predicate   # => to Ruby Float, true or false. shouldn't override.
+      true?
+    end
+
+
+    def to_string(context)   # => to XPath String. shouldn't override.
+      context.make_string to_str
+    end
+
+    def to_number(context)   # => to XPath Number. shouldn't override.
+      context.make_number to_f
+    end
+
+    def to_boolean(context)  # => to XPath Boolean. shouldn't override.
+      context.make_boolean true?
+    end
+
+
+    public
+
+    # called from compiled XPath expression
+
+    def ==(other)
+      if other.is_a? XPathNodeSet or
+          other.is_a? XPathBoolean or other.is_a? XPathNumber then
+        other == self
+      else
+        to_str == other.to_str
+      end
+    end
+
+    def <(other)
+      if other.is_a? XPathNodeSet then
+        other > self
+      else
+        to_f < other.to_f
+      end
+    end
+
+    def >(other)
+      if other.is_a? XPathNodeSet then
+        other < self
+      else
+        to_f > other.to_f
+      end
+    end
+
+    def <=(other)
+      if other.is_a? XPathNodeSet then
+        other >= self
+      else
+        to_f <= other.to_f
+      end
+    end
+
+    def >=(other)
+      if other.is_a? XPathNodeSet then
+        other <= self
+      else
+        to_f >= other.to_f
+      end
+    end
+
+    def **(other)
+      type_error 'NodeSet'
+    end
+
+    def predicate(&block)
+      type_error 'NodeSet'
+    end
+
+    def at(pos)
+      type_error 'NodeSet'
+    end
+
+    def funcall(name)   # for XPointer
+      raise XPath::NameError, "undefined function `#{name}' for #{_type}"
+    end
+
+  end
+
+
+
+
+  class XPathBoolean
+
+    include XPathObject
+
+    class << self
+      attr_reader :instance
+      private :new
+    end
+
+    def to_str
+      true?.to_s
+    end
+
+    # def to_f
+    # def true?
+
+    def to_ruby
+      true?
+    end
+
+    def to_boolean(context)
+      self
+    end
+
+    def ==(other)
+      true? == other.true?
+    end
+
+  end
+
+
+  class XPathTrueClass < XPathBoolean
+
+    @instance = new
+
+    def to_f
+      1.0
+    end
+
+    def true?
+      true
+    end
+
+  end
+
+
+  class XPathFalseClass < XPathBoolean
+
+    @instance = new
+
+    def to_f
+      0.0
+    end
+
+    def true?
+      false
+    end
+
+  end
+
+
+  XPathTrue = XPathTrueClass.instance
+  XPathFalse = XPathFalseClass.instance
+
+
+
+
+  class XPathNumber
+
+    include XPathObject
+
+    def initialize(num)
+      raise ::TypeError, "must be a Float" unless num.is_a? Float
+      @value = num
+    end
+
+    def to_str
+      if @value.nan? then
+        'NaN'
+      elsif @value.infinite? then
+        if @value < 0 then
+          '-Infinity'
+        else
+          'Infinity'
+        end
+      else
+        sprintf("%.100f", @value).gsub(/\.?0+\z/, '')    # enough?
+      end
+    end
+
+    def to_f
+      @value
+    end
+
+    def true?
+      @value != 0.0 and not @value.nan?
+    end
+
+    def to_ruby
+      to_f
+    end
+
+    def to_predicate
+      to_f
+    end
+
+    def to_number(context)
+      self
+    end
+
+
+    def ==(other)
+      if other.is_a? XPathNodeSet or other.is_a? XPathBoolean then
+        other == self
+      else
+        @value == other.to_f
+      end
+    end
+
+    def +(other)
+      @value += other.to_f
+      self
+    end
+
+    def -(other)
+      @value -= other.to_f
+      self
+    end
+
+    def *(other)
+      @value *= other.to_f
+      self
+    end
+
+    def /(other)
+      @value /= other.to_f
+      self
+    end
+
+    def %(other)
+      n = other.to_f
+      f = @value % n
+      f = -f if @value < 0
+      f = -f if n < 0
+      @value = f
+      self
+    end
+
+    def -@
+      @value = -@value
+      self
+    end
+
+    def floor
+      @value = @value.floor.to_f
+      self
+    end
+
+    def ceil
+      @value = @value.ceil.to_f
+      self
+    end
+
+    def round
+      f = @value
+      unless f.nan? or f.infinite? then
+        if f >= 0.0 then
+          @value = f.round.to_f
+        elsif f - f.truncate >= -0.5 then
+          @value = f.ceil.to_f
+        else
+          @value = f.floor.to_f
+        end
+      end
+      self
+    end
+
+  end
+
+
+
+
+  class XPathString
+
+    include XPathObject
+
+    def initialize(str)
+      raise ::TypeError, "must be a String" unless str.is_a? String
+      @value = str
+    end
+
+    def to_str
+      @value
+    end
+
+    def to_f
+      if /\A\s*(-?\d+\.?\d*)(?:\s|\z)/ =~ @value then
+        $1.to_f
+      else
+        0.0 / 0.0  # NaN
+      end
+    end
+
+    def true?
+      not @value.empty?
+    end
+
+    def to_ruby
+      to_str
+    end
+
+    def to_string(context)
+      self
+    end
+
+
+    def concat(s)
+      @value = @value + s
+      self
+    end
+
+    def start_with?(s)
+      /\A#{Regexp.quote(s)}/ =~ @value
+    end
+
+    def contain?(s)
+      /#{Regexp.quote(s)}/ =~ @value
+    end
+
+    def substring_before(s)
+      if /#{Regexp.quote(s)}/ =~ @value then
+        @value = $`
+      else
+        @value = ''
+      end
+      self
+    end
+
+    def substring_after(s)
+      if /#{Regexp.quote(s)}/ =~ @value then
+        @value = $'
+      else
+        @value = ''
+      end
+      self
+    end
+
+    def substring(start, len)
+      start = start.round.to_f
+      if start.infinite? or start.nan? then
+        @value = ''
+      elsif len then
+        len = len.round.to_f
+        maxlen = start + len
+        len = maxlen - 1.0 if len >= maxlen
+        if start <= 1.0 then
+          start = 0
+        else
+          start = start.to_i - 1
+        end
+        if len.nan? or len < 1.0 then
+          @value = ''
+        elsif len.infinite? then
+          # @value = @value[start..-1]
+          /\A[\W\w]{0,#{start}}/ =~ @value
+          @value = $'
+        else
+          # @value = @value[start, len.to_i]
+          /\A[\W\w]{0,#{start}}([\W\w]{0,#{len.to_i}})/ =~ @value
+          @value = $1
+        end
+      elsif start > 1.0 then
+        # @value = @value[(start-1)..-1]
+        /\A[\W\w]{0,#{start.to_i-1}}/ =~ @value
+        @value = $'
+      end
+      raise "BUG" unless @value
+      self
+    end
+
+    def size
+      @value.gsub(/[^\Wa-zA-Z_\d]/, ' ').size
+    end
+
+    def normalize_space
+      @value = @value.strip
+      @value.gsub!(/\s+/, ' ')
+      self
+    end
+
+    def translate(from, to)
+      to = to.split(//)
+      h = {}
+      from.split(//).each_with_index { |i,n|
+        h[i] = to[n] unless h.key? i
+      }
+      @value = @value.gsub(/[#{Regexp.quote(h.keys.join)}]/) { |s| h[s] }
+      self
+    end
+
+    def replace(str)
+      @value = str
+      self
+    end
+
+  end
+
+
+
+
+---- footer ----
+
+  #
+  #   Client            NodeVisitor        a NodeAdapter        a Node
+  #     |                    |                   |                 |
+  #    |=|                   |                   |                 |
+  #    | |--{visit(node)}-->|=|                  |                 |
+  #    | |                  | |---{accept(self)}----------------->|=|
+  #    | |                  |=|                  |                | |
+  #    | |                   |                   |                | |
+  #    | |                  |=|<------------------{on_**(self)}---|=|
+  #    | |                  | |                  |                 |
+  #    | |                  | |--{wrap(node)}-->|=|                |
+  #    | |                  | |                 | |                |
+  #    | |                  | |                 |=|                |
+  #    | |<--[NodeAdapter]--|=|                  |                 |
+  #    | |                   |                   |                 |
+  #    | |-----{request}----------------------->|=|                |
+  #    | |                   |                  | |--{request}--->|=|
+  #    | |                   |                  | |               | |
+  #    | |                   |                  | |<-----[Data]---|=|
+  #    | |<--------------------------[Data]-----|=|                |
+  #    | |                   |                   |                 |
+  #    |=|                   |                   |                 |
+  #     |                    |                   |                 |
+  #
+
+
+  class TransparentNodeVisitor
+
+    def visit(node)
+      node
+    end
+
+  end
+
+
+  class NullNodeAdapter
+
+    def node
+      self
+    end
+
+    def root
+      nil
+    end
+
+    def parent
+      nil
+    end
+
+    def children
+      []
+    end
+
+    def each_following_siblings
+    end
+
+    def each_preceding_siblings
+    end
+
+    def attributes
+      []
+    end
+
+    def namespaces
+      []
+    end
+
+    def index
+      0
+    end
+
+    def node_type
+      nil
+    end
+
+    def name_localpart
+      nil
+    end
+
+    def qualified_name
+      name_localpart
+    end
+
+    def namespace_uri
+      nil
+    end
+
+    def string_value
+      ''
+    end
+
+    def lang
+      nil
+    end
+
+    def select_id(*ids)
+      raise XPath::Error, "selection by ID is not supported"
+    end
+
+  end
+
+
+
+
+  class AxisIterator
+
+    def reverse_order?
+      false
+    end
+
+  end
+
+
+  class ReverseAxisIterator < AxisIterator
+
+    def reverse_order?
+      true
+    end
+
+  end
+
+
+  class SelfIterator < AxisIterator
+
+    def each(node, visitor)
+      yield visitor.visit(node)
+    end
+
+  end
+
+
+  class ChildIterator < AxisIterator
+
+    def each(node, visitor, &block)
+      visitor.visit(node).children.each { |i| yield visitor.visit(i) }
+    end
+
+  end
+
+
+  class ParentIterator < AxisIterator
+
+    def each(node, visitor)
+      parent = visitor.visit(node).parent
+      yield visitor.visit(parent) if parent
+    end
+
+  end
+
+
+  class AncestorIterator < ReverseAxisIterator
+
+    def each(node, visitor)
+      node = visitor.visit(node).parent
+      while node
+        i = visitor.visit(node)
+        parent = i.parent
+        yield i
+        node = parent
+      end
+    end
+
+  end
+
+
+  class AncestorOrSelfIterator < AncestorIterator
+
+    def each(node, visitor)
+      yield visitor.visit(node)
+      super
+    end
+
+  end
+
+
+  class DescendantIterator < AxisIterator
+
+    def each(node, visitor)
+      stack = visitor.visit(node).children.reverse
+      while node = stack.pop
+        i = visitor.visit(node)
+        stack.concat i.children.reverse
+        yield i
+      end
+    end
+
+  end
+
+
+  class DescendantOrSelfIterator < DescendantIterator
+
+    def each(node, visitor)
+      yield visitor.visit(node)
+      super
+    end
+
+  end
+
+
+  class FollowingSiblingIterator < AxisIterator
+
+    def each(node, visitor)
+      visitor.visit(node).each_following_siblings { |i|
+        yield visitor.visit(i)
+      }
+    end
+
+  end
+
+
+  class PrecedingSiblingIterator < ReverseAxisIterator
+
+    def each(node, visitor)
+      visitor.visit(node).each_preceding_siblings { |i|
+        yield visitor.visit(i)
+      }
+    end
+
+  end
+
+
+  class FollowingIterator < DescendantOrSelfIterator
+
+    def each(node, visitor)
+      while parent = (a = visitor.visit(node)).parent
+        a.each_following_siblings { |i| super i, visitor }
+        node = parent
+      end
+    end
+
+  end
+
+
+  class PrecedingIterator < ReverseAxisIterator
+
+    def each(node, visitor)
+      while parent = (adaptor = visitor.visit(node)).parent
+        adaptor.each_preceding_siblings { |i|
+          stack = visitor.visit(i).children.dup
+          while node = stack.pop
+            a = visitor.visit(node)
+            stack.concat a.children
+            yield a
+          end
+          yield visitor.visit(i)
+        }
+        node = parent
+      end
+    end
+
+  end
+
+
+  class AttributeIterator < AxisIterator
+
+    def each(node, visitor)
+      visitor.visit(node).attributes.each { |i| yield visitor.visit(i) }
+    end
+
+  end
+
+
+  class NamespaceIterator < AxisIterator
+
+    def each(node, visitor)
+      visitor.visit(node).namespaces.each { |i| yield visitor.visit(i) }
+    end
+
+  end
+
+
+
+
+  class XPathNodeSet
+
+    class LocationStep < XPathNodeSet
+
+      def initialize(context)
+        @context = context
+        @visitor = context.visitor
+        @nodes = []
+      end
+
+      def set_iterator(iterator)
+        @iterator = iterator
+      end
+
+      def reuse(node)
+        @node = node
+        @nodes.clear
+      end
+
+      def select
+        @iterator.each(@node, @visitor) { |i|
+          node = i.node
+          @nodes.push node if yield(i)
+        }
+        self
+      end
+
+      def select_all
+        @iterator.each(@node, @visitor) { |i| @nodes.push i.node }
+        self
+      end
+
+    end
+
+
+    include XPathObject
+
+    def initialize(context, *nodes)
+      @context = context.dup
+      @visitor = context.visitor
+      nodes.sort! { |a,b| compare_position a, b }
+      @nodes = nodes
+    end
+
+    attr_reader :nodes
+    protected :nodes
+
+
+    def to_str
+      if @nodes.empty? then
+        ''
+      else
+        @visitor.visit(@nodes[0]).string_value
+      end
+    end
+
+    def to_f
+      to_string(@context).to_f
+    end
+
+    def true?
+      not @nodes.empty?
+    end
+
+    def to_ruby
+      @nodes
+    end
+
+
+    def self.def_comparison_operator(*ops)
+      ops.each { |op|
+        module_eval <<_, __FILE__, __LINE__ + 1
+        def #{op}(other)
+          if other.is_a? XPathBoolean then
+            other #{op} self.to_boolean
+          else
+            visitor = @visitor
+            str = @context.make_string('')
+            ret = false
+            @nodes.each { |node|
+              str.replace visitor.visit(node).string_value
+              break if ret = (other #{op} str)
+            }
+            ret
+          end
+        end
+_
+      }
+    end
+
+    def_comparison_operator '==', '<', '>', '<=', '>='
+
+    class << self
+      undef def_comparison_operator
+    end
+
+    def **(other)
+      super unless other.is_a? XPathNodeSet
+      merge other.nodes
+      self
+    end
+
+
+    def count
+      @nodes.size
+    end
+
+    def first
+      @nodes[0]
+    end
+
+    def each(&block)
+      @nodes.each(&block)
+    end
+
+
+    def funcall(name)   # for XPointer
+      raise "BUG" unless block_given?
+      func = ('f_' + name.tr('-', '_')).intern
+      super unless respond_to? func, true
+      size = @nodes.size
+      pos = 1
+      c = @context.dup
+      begin
+        @nodes.collect! { |node|
+          c.reuse node, pos, size
+          pos += 1
+          args = yield(c)
+          send(func, node, *args)
+        }
+      rescue Object::ArgumentError
+        if $@[1] == "#{__FILE__}:#{__LINE__-3}:in `send'" then
+          raise XPath::ArgumentError, "#{$!} for `#{name}'"
+        end
+        raise
+      end
+      self
+    end
+
+
+    private
+
+    def compare_position(node1, node2)
+      visitor = @visitor
+      ancestors1 = []
+      ancestors2 = []
+      p1 = visitor.visit(node1).parent
+      while p1
+        ancestors1.push node1
+        p1 = visitor.visit(node1 = p1).parent
+      end
+      p2 = visitor.visit(node2).parent
+      while p2
+        ancestors2.push node2
+        p2 = visitor.visit(node2 = p2).parent
+      end
+      unless node1 == node2 then
+        raise XPath::Error, "can't compare the positions of given two nodes"
+      end
+      n = -1
+      ancestors1.reverse_each { |node1|
+        node2 = ancestors2[n]
+        unless node1 == node2 then
+          break unless node2
+          return visitor.visit(node1).index - visitor.visit(node2).index
+        end
+        n -= 1
+      }
+      ancestors1.size - ancestors2.size
+    end
+
+
+    def merge(other)
+      if @nodes.empty? or other.empty? then
+        @nodes.concat other
+      elsif (n = compare_position(@nodes.last, other.first)) <= 0 then
+        @nodes.pop if n == 0
+        @nodes.concat other
+      elsif (n = compare_position(other.last, @nodes.first)) <= 0 then
+        other.pop if n == 0
+        @nodes = other.concat(@nodes)
+      else
+        newnodes = []
+        nodes = @nodes
+        until nodes.empty? or other.empty?
+          n = compare_position(nodes.last, other.last)
+          if n > 0 then
+            newnodes.push nodes.pop
+          elsif n < 0 then
+            newnodes.push other.pop
+          else
+            newnodes.push nodes.pop
+            other.pop
+          end
+        end
+        newnodes.reverse!
+        @nodes.concat(other).concat(newnodes)
+      end
+    end
+
+
+    IteratorForAxis = {
+      :self               => SelfIterator.new,
+      :child              => ChildIterator.new,
+      :parent             => ParentIterator.new,
+      :ancestor           => AncestorIterator.new,
+      :ancestor_or_self   => AncestorOrSelfIterator.new,
+      :descendant         => DescendantIterator.new,
+      :descendant_or_self => DescendantOrSelfIterator.new,
+      :following          => FollowingIterator.new,
+      :preceding          => PrecedingIterator.new,
+      :following_sibling  => FollowingSiblingIterator.new,
+      :preceding_sibling  => PrecedingSiblingIterator.new,
+      :attribute          => AttributeIterator.new,
+      :namespace          => NamespaceIterator.new,
+    }
+
+    def get_iterator(axis)
+      ret = IteratorForAxis[axis]
+      unless ret then
+        raise XPath::NameError, "invalid axis `#{axis.id2name.tr('_','-')}'"
+      end
+      ret
+    end
+
+    def make_location_step
+      if defined? @__lstep__ then
+        @__lstep__
+      else
+        @__lstep__ = LocationStep.new(@context)
+      end
+    end
+
+
+    public
+
+    def step(axis)
+      iterator = get_iterator(axis)
+      lstep = make_location_step
+      lstep.set_iterator iterator
+      oldnodes = @nodes
+      @nodes = []
+      oldnodes.each { |node|
+        lstep.reuse node
+        nodes = yield(lstep).nodes
+        nodes.reverse! if iterator.reverse_order?
+        merge nodes
+      }
+      self
+    end
+
+
+    def select_all(axis)
+      iterator = get_iterator(axis)
+      visitor = @visitor
+      oldnodes = @nodes
+      @nodes = []
+      oldnodes.each { |start|
+        nodes = []
+        iterator.each(start, visitor) { |i| nodes.push i.node }
+        nodes.reverse! if iterator.reverse_order?
+        merge nodes
+      }
+      self
+    end
+
+
+    def predicate
+      context = @context
+      size = @nodes.size
+      pos = 1
+      result = nil
+      newnodes = @nodes.reject { |node|
+        context.reuse node, pos, size
+        pos += 1
+        result = yield(context)
+        break if result.is_a? Numeric
+        not result
+      }
+      if result.is_a? Numeric then
+        at result
+      else
+        @nodes = newnodes
+      end
+      self
+    end
+
+
+    def at(pos)
+      n = pos.to_i
+      if n != pos or n <= 0 then
+        node = nil
+      else
+        node = @nodes[n - 1]
+      end
+      @nodes.clear
+      @nodes.push node if node
+      self
+    end
+
+  end
+
+
+
+  class Context
+
+    def initialize(node, namespace = nil, variable = nil, visitor = nil)
+      visitor = TransparentNodeVisitor.new unless visitor
+      @visitor = visitor
+      @node = node
+      @context_position = 1
+      @context_size = 1
+      @variables = variable
+      @namespaces = namespace || {}
+    end
+
+    attr_reader :visitor, :node, :context_position, :context_size
+
+    def reuse(node, pos = 1, size = 1)
+      @variables = nil
+      @node, @context_position, @context_size = node, pos, size
+    end
+
+
+    def get_variable(name)
+      value = @variables && @variables[name]  # value should be a XPathObjcect.
+      raise XPath::NameError, "undefined variable `#{name}'" unless value
+      value
+    end
+
+
+    PredefinedNamespace = {
+      'xml' => 'http://www.w3.org/XML/1998/namespace',
+    }
+
+    def get_namespace(prefix)
+      ret = @namespaces[prefix] || PredefinedNamespace[prefix]
+      raise XPath::Error, "undeclared namespace `#{prefix}'" unless ret
+      ret
+    end
+
+
+    def make_string(str)
+      XPathString.new str
+    end
+
+    def make_number(num)
+      XPathNumber.new num
+    end
+
+    def make_boolean(f)
+      if f then
+        XPathTrue
+      else
+        XPathFalse
+      end
+    end
+
+    def make_nodeset(*nodes)
+      XPathNodeSet.new(self, *nodes)
+    end
+
+
+    def to_nodeset
+      make_nodeset @node
+    end
+
+    def root_nodeset
+      make_nodeset @visitor.visit(@node).root
+    end
+
+
+    def funcall(name, *args)
+      begin
+        send('f_' + name.tr('-', '_'), *args)
+      rescue Object::NameError
+        if $@[0] == "#{__FILE__}:#{__LINE__-2}:in `send'" then
+          raise XPath::NameError, "undefined function `#{name}'"
+        end
+        raise
+      rescue Object::ArgumentError
+        if $@[1] == "#{__FILE__}:#{__LINE__-7}:in `send'" then
+          raise XPath::ArgumentError, "#{$!} for `#{name}'"
+        end
+        raise
+      end
+    end
+
+
+    private
+
+    def must(type, *args)
+      args.each { |i|
+        unless i.is_a? type then
+          s = type.name.sub(/\A.*::(?:XPath)?(?=[^:]+\z)/, '')
+          raise XPath::TypeError, "argument must be #{s}"
+        end
+      }
+    end
+
+    def must_be_nodeset(*args)
+      must XPathNodeSet, *args
+    end
+
+
+    def f_last
+      make_number @context_size.to_f
+    end
+
+    def f_position
+      make_number @context_position.to_f
+    end
+
+    def f_count(nodeset)
+      must_be_nodeset nodeset
+      make_number nodeset.count.to_f
+    end
+
+    def f_id(obj)
+      unless obj.is_a? XPathNodeSet then
+        ids = obj.to_str.strip.split(/\s+/)
+      else
+        ids = []
+        obj.each { |node| ids.push @visitor.visit(node).string_value }
+      end
+      root = @visitor.visit(@node).root
+      make_nodeset(*@visitor.visit(root).select_id(*ids))
+    end
+
+    def f_local_name(nodeset = nil)
+      unless nodeset then
+        n = @node
+      else
+        must_be_nodeset nodeset
+        n = nodeset.first
+      end
+      n = @visitor.visit(n) if n
+      n = n.name_localpart if n
+      n = '' unless n
+      make_string n
+    end
+
+    def f_namespace_uri(nodeset = nil)
+      unless nodeset then
+        n = @node
+      else
+        must_be_nodeset nodeset
+        n = nodeset.first
+      end
+      n = @visitor.visit(n) if n
+      n = n.namespace_uri if n
+      n = '' unless n
+      make_string n
+    end
+
+    def f_name(nodeset = nil)
+      unless nodeset then
+        n = @node
+      else
+        must_be_nodeset nodeset
+        n = nodeset.first
+      end
+      n = @visitor.visit(n) if n
+      n = n.qualified_name if n
+      n = '' unless n
+      make_string n
+    end
+
+
+    def f_string(obj = nil)
+      obj = to_nodeset unless obj
+      obj.to_string self
+    end
+
+    def f_concat(str, str2, *strs)
+      s = str2.to_str.dup
+      strs.each { |i| s << i.to_str }
+      str.to_string(self).concat(s)
+    end
+
+    def f_starts_with(str, sub)
+      make_boolean str.to_string(self).start_with?(sub.to_str)
+    end
+
+    def f_contains(str, sub)
+      make_boolean str.to_string(self).contain?(sub.to_str)
+    end
+
+    def f_substring_before(str, sub)
+      str.to_string(self).substring_before sub.to_str
+    end
+
+    def f_substring_after(str, sub)
+      str.to_string(self).substring_after sub.to_str
+    end
+
+    def f_substring(str, start, len = nil)
+      len = len.to_number(self) if len
+      str.to_string(self).substring start.to_number(self), len
+    end
+
+    def f_string_length(str = nil)
+      if str then
+        str = str.to_string(self)
+      else
+        str = make_string(@node.string_value)
+      end
+      make_number str.size.to_f
+    end
+
+    def f_normalize_space(str = nil)
+      if str then
+        str = str.to_string(self)
+      else
+        str = make_string(@node.string_value)
+      end
+      str.normalize_space
+    end
+
+    def f_translate(str, from, to)
+      str.to_string(self).translate from.to_str, to.to_str
+    end
+
+
+    def f_boolean(obj)
+      obj.to_boolean self
+    end
+
+    def f_not(bool)
+      make_boolean(!bool.true?)
+    end
+
+    def f_true
+      make_boolean true
+    end
+
+    def f_false
+      make_boolean false
+    end
+
+    def f_lang(str)
+      lang = @visitor.visit(@node).lang
+      make_boolean(lang && /\A#{Regexp.quote(str.to_str)}(?:-|\z)/i =~ lang)
+    end
+
+
+    def f_number(obj = nil)
+      obj = to_nodeset unless obj
+      obj.to_number self
+    end
+
+    def f_sum(nodeset)
+      must_be_nodeset nodeset
+      sum = 0.0
+      nodeset.each { |node|
+        sum += make_string(@visitor.visit(node).string_value).to_f
+      }
+      make_number sum
+    end
+
+    def f_floor(num)
+      num.to_number(self).floor
+    end
+
+    def f_ceiling(num)
+      num.to_number(self).ceil
+    end
+
+    def f_round(num)
+      num.to_number(self).round
+    end
+
+  end
+
+
+end

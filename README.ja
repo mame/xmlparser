@@ -1,0 +1,789 @@
+       Expat (XML Parser Toolkit) 用拡張モジュール
+                     version 0.6.8
+
+                          吉田正人
+                   <yoshidam@yoshidam.net>
+
+- 概要
+
+本モジュールは，Rubyから James Clark 氏の XML Parser Toolkit
+"expat" (http://www.jclark.com/xml/expat.html) へアクセスす
+るための拡張モジュールです。
+
+サポートしている expat のバージョンは，1.95.0 以降
+(http://sourceforge.net/projects/expat/) です。
+
+
+- インストール
+
+Ruby-1.6 以降でしか動作確認されていません。Ruby-1.6.7 以降の
+使用をおすすめします。また，expat-1.95.x のソースが必要です。
+
+まず expat をコンパイルしてください。 expat-1.95.x を使う場
+合は，configure; make; make install でインストールできます。
+
+次に xmlparser モジュールをコンパイルします。expat のヘッダ
+ファイルやライブラリの位置を extconf.rb のオプションで指定す
+ることができます。
+
+   --with-expat-lib=/path/to/expat/lib
+   --with-expat-include=/path/to/expat/include
+
+Perl 用 XML::Parser の エンコーディングマップを利用する場合
+は --with-perl-enc-map オプションでディレクトリを指定して下
+さい。Encodings ディレクトリの中に EUC-JP とShift_JIS のマッ
+プが入っています。必要ならば適当なディレクトリにコピーしてく
+ださい。
+
+後は通常のモジュールインストールを行ってください。
+
+  ruby extconf.rb --with-perl-enc-map=/usr/local/lib/XML/Parser/Encodings
+  make
+  make site-install
+
+
+- 使い方
+
+ruby の make 時に静的にリンクしていない場合は，
+
+  require "xml/parser"
+
+としてから使用してください。
+
+パース結果を得る方法として，イベントハンドラを定義する方法と
+イテレータとして使う方法があります。
+
+イベントハンドラを定義する方法は SAX (Simple API for XML) に
+似ています。
+
+イベントハンドラを使う場合，基本的に XMLParser クラスを継承
+し，イベントハンドラメソッドを定義して使ってください。
+private メソッドにしておくほうが安全でしょう。
+XMLParser クラスのインスタンスに特異メソッドを定義しても構い
+ません。イベントハンドラが定義されていない場合は文法チェック
+しかしません。
+
+  メソッド名               | イベント
+  -------------------------+-------------------
+  startElement             | エレメント開始タグ
+  endElement               | エレメント終了タグ
+  character                | 文字データ
+  processingInstruction    | PI
+  unparsedEntityDecl       | 解析対象外実体宣言(OBSOLETE)
+  notationDecl             | 記法宣言
+  externalEntityRef        | 外部実体参照
+  comment                  | コメント
+  startCdata               | CDATA セクション開始
+  endCdata                 | CDATA セクション終了
+  startNamespaceDecl       | Namespace 宣言開始
+  endNamespaceDecl         | Namespace 宣言終了
+  startDoctypeDecl         | 文書型宣言開始
+  endDoctypeDecl           | 文書型宣言終了
+  notStandalone            | standalone ではない
+  default                  | その他
+  defaultExpand            | default と同じ (*1)
+  unknownEncoding          | 未知のエンコーディング
+  elementDecl              | element declaration
+  attlistDecl              | attlist declaration
+  xmlDecl                  | XML declaration
+  entityDecl               | entity declaration
+
+  *1 default とは内部実体参照を展開することだけが違います。
+     defaultExpand を定義すると default を無視します。
+
+トップレベルで関数を定義する場合は関数名に注意して下さい。た
+またまイベントハンドラと同じ名前にしてしまうと予期しない結果
+が招くことがあります。トップレベルで関数を定義すると Object
+のメソッドと見なされます。XMLParser も Object の派生クラスな
+ので，イベントハンドラと同じ名前の関数がイベントハンドラとし
+て呼び出されてしまうのです。逆に，全ての XMLParser オブジェ
+クトで同じイベントハンドラを使うのであれば，トップレベルの関
+数として定義しても構いません。
+
+
+
+イテレータとして使う方法はより Ruby らしい(と思われる)やりか
+たです。
+
+イテレータとして使う場合はたとえイベントハンドラを定義してい
+ても無視されます。イテレータは イベントタイプ，名称， データ
+という 3 つの変数をイテレータブロックに渡します。
+
+  イベントタイプ                    | 名称            | データ
+  ----------------------------------+-----------------+---------------
+  START_ELEM                        | エレメント名    | 属性のハッシュ
+  END_ELEM                          | エレメント名    | nil
+  CDATA                             | nil             | 文字列
+  PI                                | PI 名           | 文字列
+  UNPARSED_ENTITY_DECL(OBSOLETE)    | 実体名          | 配列 (*1)
+  NOTATION_DECL                     | 記法名          | 配列 (*2)
+  EXTERNAL_ENTITY_REF               | 実体名 (*5)     | 配列 (*2)
+  COMMENT                           | nil             | 文字列
+  START_CDATA                       | nil             | nil
+  END_CDATA                         | nil             | nil
+  START_NAMESPACE_DECL              | prefix          | URI
+  END_NAMESPACE_DECL                | prefix          | nil
+  START_DOCTYPE_DECL                | 文書型名        | nil
+  END_DOCTYPE_DECL                  | nil             | nil
+  DEFAULT                           | nil             | 文字列
+  ELEMENT_DECL                      | element name    | array (*8)
+  ATTLIST_DECL                      | element name    | array (*9)
+  XML_DECL                          | nil             | array (*10)
+  ENTITY_DECL                       | entity name     | array (*11)
+
+  *1 [URLベース，システム識別子，公開識別子，記法名]
+      URLベース，記法名 は nil になることがあります。
+  *2 [URLベース，システム識別子，公開識別子]
+      URLベース，システム識別子，公開識別子 は nil になることがあります。
+  *5 外部パラメータ実体の場合は nil になります。
+  *8 [type, quant, name, [...]]
+  *9 [attname, atttype, default, isrequired]
+  *10 [version, encoding, standalone]
+  *11 [isPE, value, URL base, system ID, public ID, notation name]
+
+UNPARSED_ENTITY_DECL，NOTATION_DECL，EXTERNAL_ENTITY_REF，
+COMMENT，START_CDATA，END_CDATA，START_NAMESPACE_DECL，
+END_NAMESPACE_DECL，DEFAULT，ELEMENT_DECL，ATTLIST_DECL，
+XML_DECL，ENTITY_DECL，EXTERNAL_PARSED_ENTITY_DECL，
+INTERNAL_PARSED_ENTITY_DECL が発生するのはそれぞれ，ダミーの
+unparsedEntityDecl，notationDecl，externalEntityRef，comment，
+startCdata，endCdata，startNamespaceDecl，endNamespaceDecl，
+default (または defaultExpand)，elementDecl，attlistDecl，
+xmlDecl，entityDecl，externalParsedEntityDecl，
+internalParsedEntityDecl メソッドが定義されているときだけで
+す。
+
+入力文字エンコーディングは UTF-8, UTF-16 に対応しています。
+出力は UTF-8 です。それ以外の文字エンコーディングを使いたい
+場合は文字エンコーディングを変換し，<?xml ... ?> 行の
+encoding="..." を書き換えてください。
+コンパイル時に XML_ENC_PATH が適切に設定されていた場合，Perl
+用 XML::Parser のエンコーディングマップを利用できます。この
+パッケージにはエンコーディングマップは含まれていないので，
+CPAN から XML::Parser あるいは XML::Encoding モジュールを入
+手し，.enc ファイルを適当なディレクトリにインストールして下
+さい。
+
+
+XMLParser クラス:
+
+ クラスメソッド
+    new(encoding = nil, nssep = nil)
+      XML パーサオブジェクトを作成します。作成に失敗すると
+      XMLParserError 例外が発生します。
+      encoding として文字エンコーディングを外部から指定する
+      ことも出来ます。Expat が対応しているエンコーディング名
+      (ISO-8859-1, UTF-8, US-ASCII, UTF-16)が使えます。
+      Expat-ja の場合は EUC-JP と Shift_JIS も使えるはずです。
+
+      nssep を指定すると名前空間拡張が有効になります。エレメ
+      ントや属性の名前にプレフィックスを指定すると，エレメン
+      ト名や属性名が URI とローカルパートを連結した名前にな
+      ります。nssep で指定された文字列の最初の文字がセパレー
+      タになります。
+
+      例えば
+
+         <hoge:test xmlns:hoge="http://www.yoshidam.net/ns/hoge">
+
+      を nssep = '!' でパースすると，エレメント名は
+
+         http://www.yoshidam.net/ns/hoge!test
+
+      になります。
+
+      パースの終わったパーサオブジェクトの再利用はできないの
+      で，パース毎にパーサオブジェクトを作成してください。
+
+    new(parser, context, encoding = nil)
+      外部実体パース用のXML パーサオブジェクトを作成します。
+      作成に失敗するとXMLParserError 例外が発生します。
+      externalEntityRef イベントが発生以降に呼び出せます。
+      parser として XML パーサオブジェクトを指定して下さい。
+      context として externalEntityRef イベントのパースコン
+      テクストが指定できます。
+      encoding として文字エンコーディングを外部から指定する
+      こともできます。
+
+      reset メソッドを呼び出すことで再利用が可能です。
+
+    expatVersion()
+      expat のバージョンを得ます。
+
+    getFeatureList
+      Get a hash list of expat API's features.
+
+      This method is for expat-1.95.5 or later.
+
+ メソッド
+    parse(str = nil, isFinal = true)
+      str をパースします。パース結果としてイベントハンドラが
+      呼び出されます。イテレータブロックを指定した場合は，イ
+      ベントハンドラは呼び出されません。
+
+      isFinal は XML の途中までパースする場合は false, 最後
+      までの場合は true を指定して下さい。省略時は true です。
+      引数無しで呼び出すことで，パースの終了を指示することも
+      できます。
+
+      str としてストリームを渡すこともできます。String の派
+      生オブジェクトではなく，public な gets メソッドを持っ
+      ているオブジェクトがストリームとみなされます。
+      この場合，isFinal の指定は無視され，gets が nil
+      を返すまでパースします。
+
+      パースエラーを検出すると XMLParserError 例外が発生します。
+
+    done
+      パースを終了し，パーサの使用したメモリを解放します。通
+      常は GC に任せてしまっても問題ありませんが，外部パラメー
+      タ実体をパースした後は必ず externalEntityRef イベント
+      内で解放してください。
+
+    defaultCurrent
+      イベントハンドラ内で呼び出します。default イベントを発
+      生させ，パース前の生のデータを得ることができます。
+      イベントハンドラ内ですぐさま defualt イベントが発生し
+      ます。
+      イテレータブロック内で使った場合，次のイテレータブロッ
+      ク呼び出しが DEFAULT になります。default ハンドラーは
+      呼び出されないことに注意して下さい。
+
+    setBase
+      URL ベースを設定します。設定した値は，
+      unparsedEntityDecl メソッドなどの引数として渡されます。
+
+    line
+    column
+    byteIndex
+      イベントハンドラ内で呼び出します。現在のパース位置を返
+      します。
+      また，parse メソッドが XMLParserError 例外で発生した時
+      に呼び出すとエラー位置を返します。
+
+    byteCount
+      イベントハンドラ内で呼び出します。現在のイベント対象の
+      長さを返します。内部実体では 0 を返します。
+
+    getSpecifiedAttributes
+      属性が指定された値か，デフォルト値かを知ることができま
+      す。  属性名をキー，指定されたかどうか (true/flase) を
+      値とするハッシュを返します。  startElement イベント内で
+      呼び出してください。
+
+    setParamEntityParsing(parsing)
+
+      外部パラメータ実体(外部 DTD サブセットも含む) をパース
+      するかどうかを指定します。
+      parsing には
+         PARAM_ENTITY_PARSING_NEVER (0)
+         PARAM_ENTITY_PARSING_UNLESS_STANDALONE (1)
+         PARAM_ENTITY_PARSING_ALWAYS (2)
+      のいずれかを指定してください。
+
+      外部パラメータエンティティをパースする場合，
+      externalEntityRef イベントが呼び出されます。context は
+      nil になります。
+
+    setReturnNSTriplet(do_nst)
+      名前空間が有効なときに，URI + ローカル名 + プレフィッ
+      クスを使うかどうか指示します。false の時はURI + ローカ
+      ル名です。
+
+      expat-1.95.3 以降では，要素名に対しても有効です。
+
+    getInputContext
+      入力バッファと現在パース位置を得ます。
+
+    getIdAttribute
+      ID 属性の名前を得ます。
+      startElement イベント内で呼び出してください。
+
+    reset(encoding)
+      パーサオブジェクトを再利用するためにリセットします。
+      encoding として文字エンコーディングを外部から指定する
+      こともできます。
+
+      This method is for the expat-1.95.3 or later.
+
+    useForeignDTD(useDTD)
+      Specifies to parse an external DTD subset without the
+      DOCTYPE declaration.
+
+      In externalEntityRef, sysID and pubID will be NULL.
+
+      This method is for the expat-1.95.5 or later.
+
+      See setParamEntityParsing also.
+
+
+ メソッド (イベントハンドラ)
+    startElement(name, attrs)
+      エレメント開始タグを見付けると呼び出されます。name は
+      エレメント名，attrs は属性名をキー，属性値を値とするハッ
+      シュです。
+
+    endElement(name)
+      エレメント終了タグを見付けると呼び出されます。name は
+      エレメント名です。
+
+    character(data)
+      テキスト，CDATA セクションを見付けると呼び出されます。
+      default ハンドラが未定義のときは内部実体は展開されます。
+
+    processingInstruction(target, data)
+      PI を見付けると呼び出されます。
+
+    unparsedEntityDecl(entityName, base, systemId, publicId, notationName)
+      ** OBSOLETE **
+      解析対象外実体宣言を見付けると呼び出されます。
+      entityName，base，systemId，publicId，notationName は
+      それぞれ実体名，URL ベース，システム識別子，公開識別子，
+      記法名です。URL ベース，記法名 は nil になることがあり
+      ます。
+
+      イテレータとして使う場合，unparsedEntityDecl が定義さ
+      れているかどうかだけがチェックされ，
+      UNPARSED_ENTITY_DECL イベントの発生に影響を与えます。
+
+    notationDecl(notationName, base, systemId, publicId)
+      記法宣言を見付けると呼び出されます。
+      notationName，base，systemId，publicId はそれぞれ記法
+      名，URL ベース，システム識別子，公開識別子です。URL ベー
+      ス，システム識別子，公開識別子 は nil になることがあり
+      ます。
+
+      イテレータとして使う場合，notationDecl が定義されてい
+      るかどうかだけがチェックされ，NOTATION_DECL イベントの
+      発生に影響を与えます。
+
+    externalEntityRef(context, base, systemId, publicId)
+      外部実体参照を見付けると呼び出されます。
+      context，base，systemId，publicId はそれぞれパースコン
+      テクスト，URL ベース，システム識別子，公開識別子です。
+      URL ベース，公開識別子 は nil になることがあります。
+      パースコンテクストは外部実体パース用のパーサを生成する
+      ときの context 引数として利用可能です。
+
+      このイベントで外部実体をパースしなければ，外部実体はパー
+      スされることはありません。
+
+      イテレータとして使う場合，externalEntityRef が定義され
+      ているかどうかだけがチェックされ，
+      ETERNAL_ENTITY_DEF イベントの発生に影響を与えます。
+
+      例
+        def externalEntityRef(context, base, systemId, publicId)
+          extp = self.type.new(self, context)
+          file = if base.nil?; systemId; else base + "/" + systemId; end
+          extp.parse(open(file))
+          extp.done
+        end
+
+      テスト版 expat では外部パラメータ実体参照 (および外部 DTD 
+      サブセット) を見付けた場合にも呼び出されます。この場合
+      は context は nil になります。外部パラメータ実体をパー
+      スする場合は必ずこのハンドラ内でパースし，パースが終了
+      したら done を呼び出してください。
+      setParamEntityParsing も参照してください。
+
+    comment(data)
+      コメントを見付けると呼び出されます。
+
+      イテレータとして使う場合，comment が定義されているかど
+      うかだけがチェックされ，COMMENT イベントの発生に影響
+      を与えます。
+
+    startCdata()
+      CDATA セクションの開始時に呼び出されます。CDATA セクショ
+      ンの内容はcharacter イベントで報告されます。
+
+      イテレータとして使う場合，startCdata が定義されている
+      かどうかだけがチェックされ，START_CDATA イベントの発生
+      に影響を与えます。
+
+    endCdata()
+      CDATA セクションの終了時に呼び出されます。
+
+      イテレータとして使う場合，endCdata が定義されているか
+      どうかだけがチェックされ，END_CDATA イベントの発生に影
+      響を与えます。
+
+    startNamespaceDecl(prefix, uri)
+      Namespace 宣言されたエレメントの開始前に呼び出されます。
+      prefix は xmlns 属性が指定された場合は nil になり，uri
+      は空 URI が指定された場合に nil になります。
+
+      イテレータとして使う場合，startNamespaceDecl が定義されて
+      いるかどうかだけがチェックされ，
+      START_NAMESPACE_DECL イベントの発生に影響を与えます。
+
+    endNamespaceDecl(prefix)
+      Namespace 宣言されたエレメントの終了後に呼び出されます。
+      prefix は xmlns 属性が指定された場合は nil になります。
+
+      イテレータとして使う場合，endNamespaceDecl が定義されて
+      いるかどうかだけがチェックされ，
+      END_NAMESPACE_DECL イベントの発生に影響を与えます。
+
+    startDoctypeDecl(doctypeName, sysid, pubid, has_internal_subset)
+      DOCTYPE 宣言の文書型名を見つけると呼び出されます。
+      doctypeName は文書型名です。
+
+      イテレータとして使う場合，startDoctypeDecl が定義されて
+      いるかどうかだけがチェックされ，
+      START_DOCTYPE_DECL イベントの発生に影響を与えます。
+
+    endDoctypeDecl()
+      DOCTYPE 宣言の終了時に呼び出されます。
+
+      イテレータとして使う場合，endDoctypeDecl が定義されて
+      いるかどうかだけがチェックされ，
+      END_DOCTYPE_DECL イベントの発生に影響を与えます。
+
+    default(data)
+      他のイベントが呼び出されなかった場合に呼び出されます。
+      このメソッドを定義すると内部実体の展開が抑止されます。
+      イテレータとして使う場合，default が定義されているかど
+      うかだけがチェックされ，DEFAULT イベントの発生，内部実
+      体の展開に影響を与えます。
+
+    defaultExpand(data)
+      他のイベントが呼び出されなかった場合に呼び出されます。
+      イテレータとして使う場合，defaultExpand が定義されてい
+      るかどうかだけがチェックされ，DEFAULT イベントの発生に
+      影響を与えます。
+      defalutExpand は default メソッドに優先します。
+
+    unknownEncoding(name)
+      パース開始時か，XML 宣言のパース時に未知のエンコーディ
+      ングを検出した場合に一度だけ呼び出されます。
+
+      XMLEncoding オブジェクトを返して下さい。      
+
+      イテレータとして使う場合にもこのイベントハンドラが呼び
+      出され，イテレータブロックは呼び出されません。
+
+      詳細は次節を参照して下さい。
+
+    notStandalone()
+      standalone="yes" でない時，外部 DTD サブセットやパラメー
+      タ実体を参照すると呼び出されます。
+
+      エラーを発生させたい場合は 0，処理を続行させたい場合は 
+      1 を返してください。
+
+      イテレータとして使う場合にもこのイベントハンドラが呼び
+      出され，イテレータブロックは呼び出されません。
+
+      expat は外部 DTD サブセットやパラメータ実体を解決でき
+      ないので，このイベントが発生した場合は他の XML プロセッ
+      サを呼び出すなり，処理を中断するなりすべきかもしれませ
+      ん。
+
+    elementDecl(name, model)
+      要素宣言時に呼び出されます。 name は要素名，model は
+      内容モデルをあらわす
+        [type, quant, name, [children_model, ...]]
+      のような配列です。type は "EMPTY"，"ANY"，"MIXED"，
+      "CHOICE"，"SEQ" のいずれか，quantは ""，"?"，"*"，"+" 
+      のいずれかです。name は nil か要素名，children_model 
+      は子モデルです。
+
+      If you use iterator, this method is not called, but to
+      define this affects to cause ELEMENT_DECL event.
+
+    attlistDecl(elname, attname, att_type, dflt, isrequired)
+      属性宣言時に呼び出されます。elname は要素名，attname 
+      は属性名，att_type は属性の型，dflt は省略値，
+      isrequired は #REQUIRED かどうかをあらわします。
+
+      If you use iterator, this method is not called, but to
+      define this affects to cause ATTLIST_DECL event.
+
+    xmlDecl(version, encoding, standalone)
+      文書先頭の XML 宣言および解析可能実体のテキスト宣言時
+      に呼び出されます。テキスト宣言では version が nil に，
+      XML 宣言では encoding が nil になることがあります。
+      standalone は -1，0，1 の値をとります。
+
+      If you use iterator, this method is not called, but to
+      define this affects to cause XML_DECL event.
+
+    entityDecl(entityName, isparameter_entity, value,
+               base, systenId, publicId, notationName)
+      実体宣言時に呼び出されます。
+
+      If you use iterator, this method is not called, but to
+      define this affects to cause ENTITY_DECL event.
+
+    skippedEntity(entityName, is_parameter_entity)
+
+      This method is for expat-1.95.4 or later.
+
+      If you use iterator, this method is not called, but to
+      define this affects to cause
+      SKIPPED_ENTITY event.
+
+
+
+未知の文字エンコーディングについて
+
+unknownEncoding メソッドを定義すると，パース開始時か，XML 宣
+言のパース時に未知のエンコーディングを検出した場合に一度だけ
+呼び出されます。このイベントを処理することで，expat の対応し
+ていない文字エンコーディング(状態遷移のない多バイトエンコー
+ディングのみ)に対応することができます。
+
+unknownEncoding メソッドを定義すると Perl のエンコーディング
+マップは使用されなくなります。
+
+他のイベントと違って，イテレータとして呼び出した場合もイベン
+トハンドラが呼び出されます。
+
+引数としてエンコーディング名が渡されます。戻値としてそのエン
+コーディングに対応した XMLEncoding オブジェクトを返して下さ
+い。XMLEncoding オブジェクト以外を返すと unknownEcoding メソッ
+ドが未定義の場合と同様の例外を発生します。
+
+この機構による文字エンコーディング変換はかなり遅いです。
+
+XMLEncoding クラス
+  文字エンコーディング変換のためのクラスです。定義済みメソッ
+  ドは Latin-1 相当の変換を行ないます。そのまま使うことは無
+  意味なので，適切な変換を行なうようメソッドを定義しなおして
+  使って下さい。
+
+  lib/xmlencoding-ja.rb が実装例です。
+
+  メソッド
+    map(code)
+      そのエンコーディングのバイト列情報を定義するために内部
+      的に呼び出されます。
+      code はバイト列の最初のバイトのコードポイントで，00h
+      から FFh までの整数が渡されます。
+      戻値として以下のいずれかの値を整数で返して下さい。
+
+        0 以上 : Unicode のコードポイント
+        -1     : 不正なバイト列
+        -n     : n バイトの多バイト列 (2<=n<=4)
+
+      例えば，日本語 EUC (JIS X 0201 カナと JIS X 0212 補助
+      漢字無し)の場合は以下のような map メソッドを定義して下
+      さい。
+
+        def map(i)
+          return i if i < 128
+          return -1 if i < 160 or i == 255
+          return -2
+        end
+
+      ISO-2022-JP のような状態遷移を行なうエンコーディングに
+      は対応できません。
+
+    convert(s)
+      文字エンコーディング変換のため内部的に一文字毎に呼び出
+      されます。
+      s は map で定義された長さの多バイト列です。戻値として，
+      Unicode のコードポイント(整数) か，文字か，リトルエン
+      ディアンの UCS2 文字列を返して下さい。
+
+
+- おまけライブラリ
+
+Version 0.3.1 より XML:DOM と XML::DOM::Builder
+というライブラリを添付しました。
+ドキュメントが未完成で，API 仕様も確定ではないので，ソースを
+読める人専用です。
+
+
+XML::DOM モジュール (xml/dom/core.rb)
+  XML ツリーの作成，操作を行なうためのライブラリです。
+  API は W3C の Document Object Model (DOM) Core にほとんど準拠し
+  ています。
+
+  クラス
+    NameNodeMap
+    NodeList
+    Node
+    DocumentFragment<Node
+    Document<Node
+    CharacterData<Node
+    Attr<Node
+    Element<Node
+    Text<CharacterData
+    Comment<Data
+    CDATASection<Text
+    DocumentType<Node
+    Notation<Node
+    Entity<Node
+    EntityReference<Node
+    ProcessingInstruction<Node
+
+XML::DOM::Builder クラス (xml/dom/builder.rb)
+  XML ファイルをパースしてツリーを組み立てるためのクラスです。
+
+XML::JapaneseTreeBuilder クラス (xml/dom/builder-ja.rb)
+  日本語の XML ファイルをパースしてツリーを組み立てるための
+  クラスです。あまりお勧めできません。
+
+XML::DOM::Visitor (xml/dom/visitor.rb)
+  Visitor パターンを使いやすくするためのライブラリです。
+
+XMLEncoding_ja クラス (xml/encoding-ja.rb)
+  XML::Encoding クラスの実装例です。
+
+WGET モジュール (wget.rb)
+  XML::DOM::Builder クラスが内部で使っている http, ftp でファ
+  イルを取得するためのモジュールです。今のところ，wget, lynx 
+  等を呼び出しているだけです。
+
+DOMHASH モジュール (xml/dom/digest.rb)
+  XML::DOM モジュールに DOMHASH (draft-hiroshi-dom-hash-01.txt)
+  サポートを追加します。MD5 アルゴリズムに対応しています。
+  使い方は samples/digetstest.rb を参照してください。
+
+SAX モジュール (xml/sax.rb, xml/saxdriver.rb)
+  SAX for Ruby の実験的な実装です。
+
+XML::ParserNS クラス (xml/parserns.rb)
+  名前空間を処理する XML::Parser クラスです。nssep を指定し
+  たときに URI と QName を返します。
+
+XML::DOM (xml/dom2/)
+  DOM Level 2 の実験的実装です。
+
+
+- サンプルプログラム
+
+日本語の XML ファイルを通すためには uconv モジュールが
+必要です。
+
+  xmlchack.rb - 文法チェックだけを行うサンプル
+  xmlevent.rb - イベントハンドラ定義のサンプル
+  xmliter.rb  - イテレータのサンプル
+  treetest.rb - XML::SimpleTree サンプル
+  buildertest.rb - XML::SimpleTreeBuilder サンプル
+  gtktree.rb  - GTK を使ったサンプル
+  xmlcomment.rb - Perl の XML::Parser 付属サンプルの移植版
+  visitortest.rb - Perl の XML::Grove 付属 visitor サンプルの移植版
+  my-html.rb  - Perl の XML::Grove 付属 visitor サンプルの移植版
+  writer.rb  - Visotor の使用例
+  visitor.rb  - Visotor 風アクセスのサンプル
+  namespaces/ - 名前空間サポートのテスト
+  xpointer.rb - GTK を使った XPointer のデモ
+  digesttest.rb - DOMHASH のサンプル
+  digesttest2.rb - DOM を使わない，より高速な DOMHASH のサンプル。
+  saxtest.rb - SAX を使ったサンプル
+
+
+- 権利
+
+本拡張モジュールの著作権は吉田正人が保持します。
+
+本拡張モジュールは，ruby 本体のライセンスか，expat のライセ
+ンスのどちらかにしたがって利用することができます。
+
+encoding.h および，encoding map 関連の関数は Perl 用の
+XML::Parser モジュールの一部です。
+
+  Copyright (c) 1998 Larry Wall and Clark Cooper.
+  All rights reserved.
+  This program is free software; you can redistribute it and/or modify it
+  under the same terms as Perl itself. 
+
+
+- 作者
+
+ 吉田正人 <yoshidam@yoshidam.net>
+
+ XPointer support is contributed by Masaki Fukushima 
+     <fukusima@goto.info.waseda.ac.jp>
+
+
+- 履歴
+
+ Apr  5, 2004 version 0.6.8  fixes overflow, and taints output.
+ Mar 11, 2003 version 0.6.6  外部実体パーサ生成時のskippedEntityハンドラの
+                             初期化忘れを修正
+ Sep 20, 2002 version 0.6.5  fixes reset
+                             adds skippedEntity event for expat-1.95.4
+                             adds XML::Parser.getFeatureList and
+                             XML::Parser#useForeignDTD for expat-1.95.5
+ Jun 18, 2002 version 0.6.4  expat-1.95.3 用に XML::Parser#reset 追加
+ Mar 23, 2002 version 0.6.2  lib のレイアウト変更
+                             XML::Parser::Error の親クラス変更
+                             DOM Level 2 の実験的対応
+                             名前空間の実験的対応 (XMl::ParserNS)
+ Oct 15, 2000 version 0.6.1  expat-1.95.0，expat-1.2 対応
+ Aug  5, 2000 version 0.5.19 高橋征義さんが xmltree.rb 等を 
+                             RD 化してくださいました。
+ May 30, 2000 version 0.5.18 ruby 1.5 で動かなくなっていたので修正
+ Jan  4, 2000 version 0.5.17 NodeList#+ の問題修正 (Masatoshi SEKI
+                             さんありがとうございます)
+ Oct 14, 1999 version 0.5.16 いくつかのサンプルプログラムを変更
+ Aug 18, 1999 version 0.5.15 expat-19990728 の start/endDoctypeDecl に
+                             対応
+                             SAX ドライバのバグ修正
+ Jun 29, 1999 version 0.5.14 expat-19990626 の外部パラメータ実体
+                             (および外部 DTD サブセット)の読み込みに対応
+                             Ruby-1.2 サポートを中止。
+ Jun 10, 1999 version 0.5.13 実験的 SAX ドライバを追加
+                             expat-1.1 対応
+ May 13, 1999 version 0.5.12 extconf.rb のバグ修正 (藤本尚邦さんあり
+                             がとうございます)
+ Apr 28, 1999 version 0.5.11 expat-19990425 に対応し， NotStandalone
+                             イベント，getSpecifiedAttributes,
+                             byteCount メソッド追加 
+ Apr 20, 1999 version 0.5.10 xss4j を参考にして xmldigest.rb を変更
+ Mar 29, 1999 version 0.5.9  Ruby 1.3 用にオブジェクトの構造を変更
+ Mar 23, 1999 version 0.5.8  XPointer のキーワードの省略を可能にした
+                             XML::DOM::Builder で外部パース実体の処理を追加
+ Mar  8, 1999 version 0.5.7  expat-19990307 の start/endNamespaceDecl
+                             イベントに対応
+ Jan 25, 1999 version 0.5.6  クラス名の別名を C モジュール内に移動
+                             Cygwin で動作させるための変更
+ Jan 14, 1999 version 0.5.5  expat-19981231 の start/endCdataSection
+                             イベントに対応
+                             xmltreebuilder をテスト版 expat
+                             に対応させた (comment, CDATA)
+                             Node#trim を CDATA セクションも trim
+                             するように改造
+ Jan 13, 1999 version 0.5.4  xmltree, xmltreebuilder 改造 (バグが入ったかも)
+ Jan 10, 1999 version 0.5.3  Perl 用 encoding map 対応
+ Jan  1, 1999 version 0.5.2  expat-19981231 対応
+ Dec  1, 1998 version 0.5.1  問題点修正(福嶋正機さんありがとうございます)
+ Nov 24, 1998 version 0.5.0  テスト版 expat 対応
+ Nov  5, 1998 version 0.4.18 バグ修正(福嶋正機さんありがとうございます)
+                             クラス名に別名定義
+                               XMLParserErorr        -> XML::Parser::Error
+                             メソッド ID の初期化位置変更
+                             xmltreebuilder で Ruby のバグ?回避
+ Oct 28, 1998 version 0.4.17 メソッド ID を静的変数に移した
+ Oct 28, 1998 version 0.4.16 XPointer 使用時の ID 属性を外部から指定可能にした
+                             Node#trim を xml:space 対応にした
+ Oct 23, 1998 version 0.4.15 バグ修正，クラス名に別名定義
+                               XMLParser              -> XML::Parser
+                               XML::SimpleTree        -> XML::DOM
+                               XML::SimpleTreeBuilder -> XML::DOM::Builder
+ Oct 20, 1998 version 0.4.14 福嶋正機さんによる XPointer サポートを追加
+ Oct 18, 1998 version 0.4.13 SimpleTree のバグ修正，Vistor 追加
+ Oct 13, 1998 version 0.4.12 バグ修正，エンコーディング変換部の高速化
+ Oct  7, 1998 version 0.4.11 パーサ内部のオブジェクト管理の変更
+ Oct  4, 1998 version 0.4.9 細かいバグ修正，DOM 勧告対応など
+ Sep 22, 1998 version 0.4.8 ストリームの仕様を少し変更
+ Sep 21, 1998 version 0.4.7 SimpleTree, SimpleTreeBuilder に Comment など追加
+ Sep 18, 1998 version 0.4.6 UnknownEncording イベントに対応
+ Sep 17, 1998 version 0.4.5 SimpleTree にメソッド追加
+ Sep  8, 1998 version 0.4.4 パーサオブジェクトが T_DATA から
+                            T_OBJECT に変更
+ Sep  3, 1998 version 0.4.3 isFinal フラグを追加，ストリーム対応
+ Sep  2, 1998 version 0.4.2 外部実体イベント，外部実体パーサ追加
+ Aug 14, 1998 version 0.3.3 expat 1.0 対応
+ Aug 12, 1998 version 0.3.2 SimpleTree に XPointer もどきを追加
+                            (root, child ,id のみサポート)
+ Aug  4, 1998 version 0.3.1 ライブラリ追加，expat_ja 動作確認
+ Jul 17, 1998 version 0.3 イテレータブロック内の
+                          defaultCurrent に対応
+ Jul  3, 1998 version 0.2 イテレータに対応
+ Jul  1, 1998 version 0.1 リリース

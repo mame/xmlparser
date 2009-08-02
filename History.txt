@@ -1,0 +1,5 @@
+=== 0.6.81.1 / 2008-10-22
+
+* based on Jeff Hodges's xmlparser package (https://rubyforge.org/projects/xmlparser/).
+* some fix to work in ruby 1.9.
+* re-package using hoe (because mkrf does not work in ruby 1.9).

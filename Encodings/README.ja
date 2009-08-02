@@ -1,0 +1,18 @@
+Perl の XML::Parser 用の EUC-JP, Shift_JIS エンコーディング
+マップです。
+
+それぞれ，以下の変換表を元にしています。
+
+  EUC-JP:    ftp://ftp.unicode.org/Public/MAPPINGS/EASTASIA/JIS/{JIS0201.TXT,JIS0208.TXT,JIS0212.TXT}
+  Shift_JIS: ftp://ftp.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP932.txt
+
+Perl の XML::Parser 付属の以下のエンコーディングマップと同等
+です。
+
+  EUC-JP:    x-euc-jp-unicode.enc
+  Shift_JIS: x-sjis-cp932.enc
+
+XML 日本語プロファイル
+<http://www.y-adagio.com/public/standards/tr_xml_jpf/toc.htm> 
+を読んで，EUC-JP，Shift_JIS と Unicode の変換の問題点をよく
+理解したうえで使ってください。
